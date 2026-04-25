@@ -1,0 +1,32 @@
+[project]
+name = "battleclaude"
+version = "0.1.0"
+description = "Extract insights from the NHRL 12lbs combat-robotics Discord corpus"
+requires-python = ">=3.11"
+dependencies = [
+    "duckdb>=1.1.0",
+    "ijson>=3.3.0",
+    "tqdm>=4.66.0",
+    "python-dotenv>=1.0.0",
+    "pytz>=2024.1",      # DuckDB needs this to materialize TIMESTAMPTZ values in Python
+    "pandas>=2.2.0",     # fast bulk load path: conn.append(table, dataframe)
+    "numpy>=2.0.0",      # cosine similarity over stored vectors
+    "voyageai>=0.3.0",   # embeddings (voyage-3-large)
+    "anthropic>=0.40.0", # Claude API for synthesis
+    "rank-bm25>=0.2.2",  # lightweight BM25 over chunk text
+    "discord.py>=2.4.0", # Discord bot front-end
+]
+
+[project.scripts]
+battleclaude-ingest = "battleclaude.ingest:main"
+battleclaude-index = "battleclaude.index:main"
+battleclaude-ask = "battleclaude.ask:main"
+battleclaude-chat = "battleclaude.chat:main"
+battleclaude-bot = "battleclaude.bot:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["battleclaude"]

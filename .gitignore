@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# Env
+.env
+.env.local
+
+# Data artifacts (keep raw JSON out of git — they're huge)
+data/raw/*.json
+*.duckdb
+*.duckdb.wal
+*.bm25.pkl
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

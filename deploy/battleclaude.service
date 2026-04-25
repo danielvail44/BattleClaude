@@ -1,0 +1,17 @@
+[Unit]
+Description=BattleClaude Discord bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/BattleClaude
+ExecStart=/home/pi/BattleClaude/.venv/bin/python -m battleclaude.bot
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

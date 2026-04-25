@@ -25,7 +25,9 @@ cp .env.example .env
 # DISCORD_BOT_TOKEN  — bot only
 ```
 
-Drop DiscordChatExporter JSON in `data/raw/`, then build the indexes:
+Export the channels you want with
+[DiscordChatExporter](https://github.com/Tyrrrz/DiscordChatExporter) (JSON
+format), drop the files in `data/raw/`, then build the indexes:
 
 ```bash
 python -m battleclaude.ingest    # JSON -> DuckDB

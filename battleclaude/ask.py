@@ -4,11 +4,14 @@
 """
 from __future__ import annotations
 
+import re
 import sys
 from argparse import ArgumentParser
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+CHUNK_MARKER_RE = re.compile(r"\[chunk:([A-Za-z0-9_\-]+)\]")
 
 
 def _force_utf8_stdout() -> None:
@@ -18,15 +21,9 @@ def _force_utf8_stdout() -> None:
             stream.reconfigure(encoding="utf-8", errors="replace")
 
 from .bm25 import DEFAULT_BM25_PATH
-from .db import DEFAULT_DB_PATH, connect
+from .db import DEFAULT_DB_PATH, connect, resolve_chunk_jump_urls
 from .retrieve import retrieve
 from .synthesize import synthesize
-
-NHRL_GUILD_ID = "651601084019900483"
-
-
-def _discord_jump_url(channel_id: str, message_id: str) -> str:
-    return f"https://discord.com/channels/{NHRL_GUILD_ID}/{channel_id}/{message_id}"
 
 
 def main() -> None:
@@ -73,53 +70,46 @@ def main() -> None:
             )
         print()
 
-    print("== Answer ==\n")
     answer = synthesize(args.question, hits)
-    print(answer.text)
 
-    # Tail the sources so the user can click back to Discord.
-    # Only show the chunks Claude actually cited, in order of first appearance.
+    # Collect cited chunk_ids in first-appearance order, then rewrite [chunk:id]
+    # markers to [N] footnotes so the inline references match the Sources list.
+    id_to_hit = {h.chunk_id: h for h in hits}
     cited: list[str] = []
     seen: set[str] = set()
-    for token in answer.text.split("[chunk:"):
-        if "]" not in token:
-            continue
-        cid = token.split("]", 1)[0].strip()
-        if cid and cid not in seen:
+    for m in CHUNK_MARKER_RE.finditer(answer.text):
+        cid = m.group(1)
+        if cid not in seen and cid in id_to_hit:
             seen.add(cid)
             cited.append(cid)
+    cid_to_num = {cid: i + 1 for i, cid in enumerate(cited)}
 
-    id_to_hit = {h.chunk_id: h for h in hits}
+    def _to_footnote(m: re.Match) -> str:
+        n = cid_to_num.get(m.group(1))
+        return f"[{n}]" if n else ""
+
+    rendered = CHUNK_MARKER_RE.sub(_to_footnote, answer.text).strip()
+
+    print("== Answer ==\n")
+    print(rendered)
+
     if cited:
+        urls = resolve_chunk_jump_urls(conn, cited)
         print("\n== Sources ==")
-        for i, cid in enumerate(cited, start=1):
-            h = id_to_hit.get(cid)
-            if h is None:
-                continue
+        for cid in cited:
+            n = cid_to_num[cid]
+            h = id_to_hit[cid]
             start = h.start_ts.strftime("%Y-%m-%d %H:%M") if h.start_ts else "?"
-            url = _discord_jump_url(_resolve_channel_id(conn, cid), _resolve_start_message_id(conn, cid))
-            print(f"  [{i}] chunk:{cid}  #{h.channel_name}  {start}")
-            print(f"      {url}")
+            print(f"  [{n}] chunk:{cid}  #{h.channel_name}  {start}")
+            url = urls.get(cid)
+            if url:
+                print(f"      {url}")
 
     print(
         f"\n-- {answer.model} | in={answer.input_tokens} out={answer.output_tokens} "
         f"cache_read={answer.cache_read_tokens} cache_write={answer.cache_creation_tokens}"
     )
     conn.close()
-
-
-def _resolve_channel_id(conn, chunk_id: str) -> str:
-    row = conn.execute(
-        "SELECT channel_id FROM chunks WHERE chunk_id = ?", [chunk_id]
-    ).fetchone()
-    return row[0] if row else ""
-
-
-def _resolve_start_message_id(conn, chunk_id: str) -> str:
-    row = conn.execute(
-        "SELECT start_message_id FROM chunks WHERE chunk_id = ?", [chunk_id]
-    ).fetchone()
-    return row[0] if row else ""
 
 
 if __name__ == "__main__":

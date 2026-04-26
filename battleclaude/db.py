@@ -86,3 +86,32 @@ def init_schema(conn: duckdb.DuckDBPyConnection) -> None:
 
 def finalize_schema(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute(FINALIZE_SCHEMA_SQL)
+
+
+def resolve_chunk_jump_urls(
+    conn: duckdb.DuckDBPyConnection, chunk_ids: list[str]
+) -> dict[str, str]:
+    """chunk_id -> Discord jump URL, joining chunks to channels for guild_id.
+
+    Used by all three frontends (ask, chat, bot) so jump links work for any
+    Discord export — not just NHRL — without hardcoding a guild ID.
+    """
+    if not chunk_ids:
+        return {}
+    placeholders = ", ".join(["?"] * len(chunk_ids))
+    rows = conn.execute(
+        f"""
+        SELECT ch.chunk_id, c.guild_id, ch.channel_id, ch.start_message_id
+        FROM chunks ch
+        JOIN channels c USING (channel_id)
+        WHERE ch.chunk_id IN ({placeholders})
+        """,
+        chunk_ids,
+    ).fetchall()
+    out: dict[str, str] = {}
+    for chunk_id, guild_id, channel_id, start_message_id in rows:
+        if guild_id and channel_id and start_message_id:
+            out[chunk_id] = (
+                f"https://discord.com/channels/{guild_id}/{channel_id}/{start_message_id}"
+            )
+    return out

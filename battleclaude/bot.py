@@ -41,7 +41,7 @@ from dotenv import load_dotenv
 
 from .bm25 import DEFAULT_BM25_PATH
 from .chat import ChatState, Turn, _add_to_pool, _rewrite_question
-from .db import DEFAULT_DB_PATH, connect
+from .db import DEFAULT_DB_PATH, connect, resolve_chunk_jump_urls
 from .retrieve import retrieve
 from .synthesize import (
     MAX_OUTPUT_TOKENS,
@@ -50,7 +50,6 @@ from .synthesize import (
     format_chunks,
 )
 
-NHRL_GUILD_ID = "651601084019900483"
 DISCORD_MSG_LIMIT = 2000
 STREAM_SOFT_LIMIT = 1900       # leave headroom for a trailing cursor mark
 STREAM_EDIT_INTERVAL = 1.5     # seconds between Discord edits while streaming
@@ -86,19 +85,6 @@ def _split_for_discord(text: str, limit: int = DISCORD_MSG_LIMIT) -> list[str]:
     return out
 
 
-def _resolve_chunk_locations(conn, chunk_ids: list[str]) -> dict[str, tuple[str, str]]:
-    """chunk_id -> (channel_id, start_message_id) for jump-link construction."""
-    if not chunk_ids:
-        return {}
-    placeholders = ", ".join(["?"] * len(chunk_ids))
-    rows = conn.execute(
-        f"SELECT chunk_id, channel_id, start_message_id FROM chunks "
-        f"WHERE chunk_id IN ({placeholders})",
-        chunk_ids,
-    ).fetchall()
-    return {r[0]: (r[1], r[2]) for r in rows}
-
-
 def _format_answer_with_sources(answer_text: str, pool: dict, conn) -> str:
     """Replace [chunk:id] markers with [N] footnotes and append a sources block."""
     cited: list[str] = []
@@ -113,23 +99,28 @@ def _format_answer_with_sources(answer_text: str, pool: dict, conn) -> str:
         return CHUNK_MARKER_RE.sub("", answer_text).strip()
 
     cid_to_num = {cid: i + 1 for i, cid in enumerate(cited)}
+    urls = resolve_chunk_jump_urls(conn, cited)
 
     def _replace(m: re.Match) -> str:
         cid = m.group(1)
         n = cid_to_num.get(cid)
-        return f"[{n}]" if n else ""
+        if not n:
+            return ""
+        url = urls.get(cid)
+        # Discord markdown doesn't honor `\[` escapes inside link text, so we
+        # build `[[N](<url>)]` instead — the parser links the `N`, and the
+        # outer `[` `]` render as plain text. Visually equivalent to `[N]`.
+        return f"[[{n}](<{url}>)]" if url else f"[{n}]"
 
     rewritten = CHUNK_MARKER_RE.sub(_replace, answer_text).strip()
 
-    locations = _resolve_chunk_locations(conn, cited)
     src_lines = ["", "**Sources:**"]
     for cid in cited:
         n = cid_to_num[cid]
         h = pool[cid]
         start = h.start_ts.strftime("%Y-%m-%d %H:%M") if h.start_ts else "?"
-        loc = locations.get(cid)
-        if loc and loc[0] and loc[1]:
-            url = f"https://discord.com/channels/{NHRL_GUILD_ID}/{loc[0]}/{loc[1]}"
+        url = urls.get(cid)
+        if url:
             src_lines.append(f"[{n}] [#{h.channel_name} · {start}](<{url}>)")
         else:
             src_lines.append(f"[{n}] #{h.channel_name} · {start}")
@@ -338,13 +329,20 @@ class BattleClaudeBot(discord.Client):
                 log.debug("edit failed (will retry next render): %s", e)
 
     async def rehydrate_state(self, thread: discord.Thread) -> ChatState:
-        """Reconstruct Q/A history from the thread's messages. Pool starts empty."""
+        """Reconstruct Q/A history from the thread's messages. Pool starts empty.
+
+        The original /ask question never lived inside the thread — it came in
+        via the slash command — so we seed `pending_q` with `thread.name`,
+        which we set to the question (truncated to 90 chars) at thread creation.
+        That way the bot's first in-thread message gets paired into a Turn
+        instead of being silently dropped.
+        """
         state = ChatState()
         try:
             messages = [m async for m in thread.history(limit=REHYDRATE_LOOKBACK, oldest_first=True)]
         except discord.HTTPException:
             return state
-        pending_q: str | None = None
+        pending_q: str | None = thread.name or None
         for m in messages:
             if m.author.id == self.user.id:
                 if pending_q is not None and m.content:
@@ -450,12 +448,19 @@ def main() -> None:
     )
     load_dotenv()
 
-    token = os.environ.get("DISCORD_BOT_TOKEN")
-    if not token:
-        raise SystemExit("DISCORD_BOT_TOKEN not set in environment / .env")
+    missing = [
+        k
+        for k in ("DISCORD_BOT_TOKEN", "ANTHROPIC_API_KEY", "VOYAGE_API_KEY")
+        if not os.environ.get(k)
+    ]
+    if missing:
+        raise SystemExit(
+            f"Missing required env var(s): {', '.join(missing)}. "
+            f"Set them in .env (see .env.example) or export them in your shell."
+        )
 
     bot = build_bot(DEFAULT_DB_PATH, DEFAULT_BM25_PATH)
-    bot.run(token, log_handler=None)
+    bot.run(os.environ["DISCORD_BOT_TOKEN"], log_handler=None)
 
 
 if __name__ == "__main__":
